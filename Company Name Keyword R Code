@@ -1,1 +1,514 @@
 
+```{r}
+
+library(tidyverse)
+library(gtrendsR)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(broom)
+library(zoo)
+library(lubridate)
+library(yahoofinancer)
+library(data.table)
+library(kableExtra)
+
+```
+
+COMPANY NAME
+```{r}
+#remove tickers where there are 8+ weeks of 0 GSV.
+
+# Step 1: Identify consecutive zero GSV runs per ticker
+cn_data <- final_CN_data4 %>%
+    arrange(ticker, date) %>%
+    group_by(ticker) %>%
+    mutate(
+        zero_gsv = (GSV == 0),
+        group_id = rleid(zero_gsv)  # assign group ids for consecutive values
+    ) %>%
+    group_by(ticker, group_id) %>%
+    mutate(
+        zero_run_length = ifelse(all(zero_gsv), n(), 0)
+    ) %>%
+    ungroup()
+
+# Step 2: Find tickers with 8+ consecutive zero GSVs
+tickers_to_remove <- cn_data %>%
+    group_by(ticker) %>%
+    summarise(max_zero_run = max(zero_run_length, na.rm = TRUE)) %>%
+    filter(max_zero_run >= 8) %>%
+    pull(ticker)
+
+# Step 3: Filter them out
+cn_data_filtered <- cn_data %>%
+    filter(!ticker %in% tickers_to_remove) %>%
+    select(-zero_gsv, -group_id, -zero_run_length)  # optional cleanup
+
+#see how many tickers remain
+n_distinct(cn_data_filtered$ticker)
+
+cn_data <- cn_data_filtered
+
+#371 stocks left
+```
+
+COMPANY
+```{r}
+#calculating abnormal GSV.
+cn_data <- cn_data %>%
+    group_by(ticker) %>%
+    arrange(date) %>%
+    mutate(
+        median_prev8 = lag(rollapply(GSV, width = 8, FUN = median, align = "right", fill = NA, na.rm = TRUE)),
+        ASV = GSV - median_prev8
+    ) %>%
+    ungroup() %>%
+  filter(!is.na(ASV)) #to remove NAs
+
+```
+
+COMPANY NAME
+```{r}
+#sort into weekly quartiles
+cn_data <- cn_data %>%
+  group_by(date) %>%
+  mutate(ASV_quantile = ntile(ASV, 5)) %>%
+  ungroup()
+
+#summary stats for each quartile
+cn_data %>%
+  #  filter(date == as.Date("2020-06-14")) %>%
+    group_by(ASV_quantile) %>%
+    summarise(
+        Min_ASV = min(ASV, na.rm = TRUE),
+        Max_ASV = max(ASV, na.rm = TRUE),
+        Median_ASV = median(ASV, na.rm = TRUE),
+        Mean_ASV = mean(ASV, na.rm =TRUE)
+    )
+
+```
+
+```{r}
+
+#summary stats table
+
+summary_table <- cn_data %>%
+  group_by(ASV_quantile) %>%
+    summarise(
+        Min_ASV = min(ASV, na.rm = TRUE),
+        Max_ASV = max(ASV, na.rm = TRUE),
+        Median_ASV = median(ASV, na.rm = TRUE),
+        Mean_ASV = mean(ASV, na.rm = TRUE),
+        SD = sd(ASV, na.rm = TRUE),
+    ) %>%
+    rename(
+        `ASV Quantile` = ASV_quantile,
+        `Min` = Min_ASV,
+        `Max` = Max_ASV,
+        `Median` = Median_ASV,
+        `Mean` = Mean_ASV
+    )
+
+summary_table %>%
+    kable("html", digits = 2, caption = '<span style="color:black"> <b> Table 2: </b> Summary Statistics of ASV by Quantile <br> (Company Name Sample)</span>', align = "c") %>%
+    kable_styling(full_width = FALSE, bootstrap_options = c("basic"))
+```
+
+
+```{r}
+#calculating daily sp500 returns. 
+daily_sp500 <- sp500_returns %>%
+    group_by(tic) %>%
+    arrange(datadate) %>%
+    mutate(daily_return = (prccd - lag(prccd)) / lag(prccd)) %>%
+    ungroup() %>%
+    rename(ticker = tic, date = datadate) %>%
+    filter(!is.na(daily_return)) #to remove NAs
+```
+
+
+COMPANY NAME
+```{r}
+#actual data
+cn_data2 <- cn_data %>%
+    mutate(
+        portfolio_start = date + days(9),   #9 and 15 is Tuesday - Monday to avoid overlapping. 8-12 is monday close to friday close. maybe try just 1 day returns?
+        portfolio_end = date + days(12)      
+    )
+
+cn_portfolio_daily <- cn_data2 %>%
+    rowwise() %>%
+    mutate(date_list = list(seq(portfolio_start, portfolio_end, by = "1 day"))) %>%
+    unnest(cols = c(date_list)) %>%
+    select(ticker, ASV_quantile, portfolio_start, date = date_list)
+
+cn_portfolio_daily_returns <- cn_portfolio_daily %>%
+    left_join(daily_sp500, by = c("ticker", "date"))
+
+cn_quartile_daily_returns <- cn_portfolio_daily_returns %>%
+    group_by(date, ASV_quantile) %>%
+    summarise(
+        avg_return = mean(daily_return, na.rm = TRUE),
+        .groups = "drop"
+    ) %>%
+  filter(!is.na(avg_return))
+
+```
+
+
+COMPANY NAME
+```{r}
+#FF regressions
+
+#issue - we don't have FF data for the full frame. 
+#merge quartile return and FF datasets
+com_data <- cn_quartile_daily_returns %>%
+  inner_join(FF, by = "date")
+
+#get excess returns
+com_data <- com_data %>%
+  mutate(excess_return = avg_return - rf)
+
+#run regression for each quartile
+cn_regression_results <- com_data %>%
+  group_by(ASV_quantile) %>%
+  nest() %>%
+  mutate(model = map(data, ~ lm(excess_return ~ mktrf + smb + hml + umd, data = .x)),
+         tidy_output = map(model, tidy),
+         glance_output = map(model, glance))
+
+#get regression results 
+cn_regression_results %>%
+  select(ASV_quantile, tidy_output) %>%
+  unnest(tidy_output)
+
+#r squared
+cn_regression_results %>%
+  select(ASV_quantile, glance_output) %>%
+  unnest(glance_output)
+
+```
+
+```{r}
+#average returns 
+com_data %>%
+  group_by(ASV_quantile) %>%
+  summarise(
+    avg_daily_return = mean(excess_return, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    avg_daily_return = round(avg_daily_return * 100, 4),  # Convert to % and round
+    ASV_quantile = case_when(
+      ASV_quantile == 1 ~ "1 (lowest ASV)",
+      ASV_quantile == 5 ~ "5 (highest ASV)",
+      TRUE ~ as.character(ASV_quantile)  # Keep other quantiles as-is (2, 3, 4)
+    )
+  ) %>%
+  kable("html",
+        caption = '<span style="color:black"><b>Table 3:</b> Average Daily Excess Return by ASV Quantile (Company Name Sample) </span>',
+        col.names = c("ASV Quantile", "Avg. Daily Excess Return (%)"),
+        align = "c") %>%
+  kable_styling(full_width = FALSE,
+                bootstrap_options = c("basic"))
+```
+
+```{r}
+#long-short returns
+long_short_returns <- cn_quartile_daily_returns %>%
+    filter(ASV_quantile %in% c(1, 5)) %>%
+    select(date, ASV_quantile, avg_return) %>%
+    pivot_wider(names_from = ASV_quantile, values_from = avg_return, names_prefix = "Q") %>%
+    mutate(long_short = Q1 - Q5)
+
+#merge with FF data, cumulative long-short returns 
+regression_data <- long_short_returns %>%
+  inner_join(FF, by = "date") %>%
+  mutate(long_short_excess = long_short - rf,    
+         cum_return = cumprod(1 + long_short_excess) - 1)
+
+#run regressions
+model <- lm(long_short_excess ~ mktrf + smb + hml + umd, data = regression_data)
+summary(model)
+
+# Extract coefficient details
+long_short_coef <- tidy(model)
+
+# Extract model summary statistics
+long_short_rsq <- glance(model)
+
+# Combine and format
+long_short_table <- long_short_coef %>%
+  mutate(Quantile = "Q1 - Q5") %>%  # Label this as the long-short portfolio
+  select(Quantile, term, estimate, std.error, statistic, p.value) %>%
+  rename(
+    Term = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    Statistic = statistic,
+    `P-Value` = p.value
+  ) %>%
+  mutate(
+    `R²` = round(long_short_rsq$r.squared, 2),
+    `F-statistic` = round(long_short_rsq$statistic, 2),
+    `F P-Value` = ifelse(
+      tic_long_short_rsq$p.value < 0.05,
+      paste0("<strong>", formatC(long_short_rsq$p.value, format = "f", digits = 4), "</strong>"),
+      formatC(long_short_rsq$p.value, format = "f", digits = 4)
+    )
+  ) %>%
+  mutate(
+    `F-statistic` = ifelse(row_number() == 1, `F-statistic`, ""),
+    `F P-Value` = ifelse(row_number() == 1, `F P-Value`, "")
+  )
+
+# Format and display using kable
+long_short_table %>%
+  mutate(
+    Estimate = round(Estimate, 4),
+    `Std. Error` = round(`Std. Error`, 4),
+    Statistic = round(Statistic, 3),
+    `P-Value` = ifelse(
+      `P-Value` < 0.05,
+      paste0("<strong>", formatC(`P-Value`, format = "f", digits = 4), "</strong>"),
+      formatC(`P-Value`, format = "f", digits = 4)
+    )
+  ) %>%
+  kable("html",
+        escape = FALSE,
+        caption = '<span style="color:black"><b>Table 7:</b> Fama-French Regression for Long–Short Portfolio (Q1 – Q5)  (Company Name Keyword Sample)</span>',
+        align = "c") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("condensed"))
+```
+
+```{r}
+#correlation between ticker and company name keywords
+
+# Step 1: Create test copies (do NOT change originals)
+ticker_test <- ticker_data2
+cn_test <- cn_data
+
+# Step 2: Rename GSV columns safely
+colnames(ticker_test)[colnames(ticker_test) == "GSV"] <- "gsv_ticker"
+colnames(cn_test)[colnames(cn_test) == "GSV"] <- "gsv_name"
+
+# Step 3: Merge the test datasets on date and ticker
+merged_test <- merge(ticker_test, cn_test, by = c("date", "ticker"))
+
+# Step 4: Calculate per-stock correlation
+cor_results <- merged_test %>%
+  group_by(ticker) %>%
+  summarise(correlation = cor(gsv_ticker, gsv_name, use = "complete.obs"))
+
+# Step 5: Plot distribution of correlation coefficients
+plot <- ggplot(cor_results, aes(x = correlation)) +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") +
+  labs(title=expression(bold("Figure 4:") ~ "Distribution of GSV Correlations: Ticker vs. Name Keywords"),
+       x = "Correlation", y = "Number of Stocks") +
+  theme_minimal()
+
+plot
+
+```
+
+```{r}
+#cumulative sp500 daily returns. 
+
+#making subset of sp500 daily returns only with 371 stocks in the sample.
+
+target_stocks <- c("A", "AAPL", "ABBV", "ABT", "ACGL", "ACN", "ADBE", "ADM", "ADP", "ADSK", "AEE", "AEP", "AES", "AFL", "AIG", "AKAM", "ALB", "ALGN", "ALL", "AMAT", "AMCR", "AMD", "AMGN", "AMP", "AMT", "AMZN", "ANET", "AON", "APA", "APD", "APO", "ARE", "ATO", "AVGO", "AWK", "AXON", "AXP", "AZO", "BA", "BAC", "BALL", "BAX", "BBY", "BDX", "BIIB", "BK", "BKNG", "BKR", "BLK", "BMY", "BR", "BRK.B", "BSX", "BX", "C", "CAG", "CAH", "CARR", "CAT", "CB", "CBOE", "CBRE", "CCL", "CDNS", "CDW", "CF", "CFG", "CHTR", "CI", "CINF", "CL", "CLX", "CMCSA", "CME", "CMG", "CMI", "CNC", "COF", "COO", "COP", "COST", "CPRT", "CPT", "CRM", "CRWD", "CSCO", "CSGP", "CSX", "CTAS", "CTSH", "CTVA", "CVS", "CVX", "CZR", "D", "DAL", "DD", "DE", "DELL", "DG", "DGX", "DHI", "DHR", "DIS", "DLTR", "DOV", "DOW", "DPZ", "DRI", "DTE", "DUK", "DVA", "DVN", "DXCM", "EA", "EBAY", "ECL", "ED", "EFX", "EIX", "EL", "EMN", "EMR", "ENPH", "EOG", "EPAM", "EQIX", "EQT", "ES", "ETN", "ETR", "EVRG", "EW", "EXC", "EXPE", "F", "FANG", "FAST", "FCX", "FDX", "FE", "FFIV", "FI", "FICO", "FIS", "FITB", "FOXA", "FSLR", "FTNT", "GD", "GDDY", "GE", "GIS", "GLW", "GM", "GNRC", "GOOGL", "GPC", "GPN", "GRMN", "GS", "GWW", "HAL", "HAS", "HCA", "HD", "HIG", "HII", "HLT", "HON", "HPE", "HPQ", "HRL", "HSY", "HUM", "IBM", "ICE", "IDXX", "IEX", "IFF", "INCY", "INTC", "INTU", "IP", "IPG", "IRM", "ISRG", "IT", "ITW", "IVZ", "J", "JBL", "JNJ", "JPM", "K", "KDP", "KEYS", "KHC", "KKR", "KLAC", "KMB", "KMI", "KMX", "KO", "KR", "LDOS", "LEN", "LH", "LHX", "LIN", "LKQ", "LLY", "LMT", "LNT", "LOW", "LRCX", "LULU", "LUV", "LVS", "LYB", "LYV", "MA", "MAA", "MAR", "MCD", "MCHP", "MCK", "MCO", "MDLZ", "MDT", "MET", "META", "MGM", "MKC", "MMM", "MNST", "MO", "MOS", "MPC", "MRK", "MRNA", "MS", "MSCI", "MSFT", "MSI", "MTB", "MTCH", "MU", "NCLH", "NDAQ", "NEE", "NEM", "NFLX", "NKE", "NOC", "NOW", "NRG", "NSC", "NTAP", "NUE", "NVDA", "NVR", "NWSA", "NXPI", "O", "ODFL", "OKE", "ORCL", "OTIS", "OXY", "PANW", "PARA", "PAYC", "PAYX", "PCAR", "PCG", "PEG", "PEP", "PFE", "PFG", "PG", "PGR", "PH", "PLD", "PM", "PNC", "POOL", "PPG", "PPL", "PRU", "PSA", "PSX", "PTC", "PYPL", "QCOM", "RCL", "REGN", "RF", "RJF", "RL", "RMD", "ROL", "ROST", "RTX", "SBAC", "SBUX", "SCHW", "SHW", "SJM", "SLB", "SNA", "SNPS", "SO", "SPGI", "SRE", "STLD", "STT", "STX", "STZ", "SWKS", "SYF", "SYK", "SYY", "T", "TAP", "TFC", "TGT", "TJX", "TMO", "TMUS", "TPR", "TRMB", "TROW", "TRV", "TSCO", "TSLA", "TSN", "TT", "TTWO", "TXN", "TXT", "UAL", "UBER", "ULTA", "UNH", "UNP", "UPS", "URI", "V", "VICI", "VLO", "VMC", "VRTX", "VZ", "WAB", "WAT", "WBA", "WDAY", "WDC", "WELL", "WFC", "WM", "WMB", "WMT", "WSM", "WYNN", "XEL", "XOM", "YUM", "ZBRA", "ZTS")
+
+daily_sp500_subset <- daily_sp500 %>%
+  filter(ticker %in% target_stocks) %>%
+  inner_join(FF, by = "date")
+
+buy_hold_daily_returns <- daily_sp500_subset %>%
+  group_by(date) %>%
+  summarise(avg_return = mean(daily_return, na.rm = TRUE)) %>%
+  left_join(select(FF, date, rf), by = "date") %>%  # Explicitly join RF
+  mutate(excess_return = avg_return - rf) %>%        # Subtract the correct RF
+  arrange(date)
+
+buy_hold_cumulative <- buy_hold_daily_returns %>%
+  mutate(
+    cum_excess_return = cumprod(1 + excess_return) - 1,
+    ASV_quantile = "Equal-Weighted"
+  ) %>%
+  select(date, ASV_quantile, cum_excess_return)
+
+```
+
+```{r}
+#plotting cumulative returns of quantile portfolios, buy-and-hold and long-short strategy. 
+
+cn_cumulative_returns <- cn_quartile_daily_returns %>%
+  left_join(select(FF, date, rf), by = "date") %>%
+  arrange(ASV_quantile, date) %>%
+  group_by(ASV_quantile) %>%
+  mutate(
+    excess_return = avg_return - rf,  # Subtract risk-free rate
+    cum_excess_return = cumprod(1 + excess_return) - 1  # Compound excess returns
+  ) %>%
+  filter(!is.na(cum_excess_return))
+
+combined_cumulative <- bind_rows(
+    cn_cumulative_returns %>% mutate(ASV_quantile = as.character(ASV_quantile)),
+    buy_hold_cumulative,
+    regression_data %>% 
+      select(date, cum_excess_return = cum_return) %>% 
+      mutate(ASV_quantile = "Long-Short")
+) %>%
+    mutate(ASV_quantile = factor(
+        ASV_quantile, 
+        levels = c("Equal-Weighted", "1", "2", "3", "4", "5", "Long-Short")
+    ))
+
+#FINAL cumulative return graph
+ggplot(combined_cumulative, aes(x = date, y = cum_excess_return, color = ASV_quantile)) +
+    geom_line(size = 1) +
+    labs(
+        x = "Date",
+        y = "Cumulative Excess Return",
+        color = "Strategy"
+    ) +
+    ggtitle(bquote(bold("Figure 2")*": Cumulative Excess Returns for ASV-based Strategies (Company Name Keyword Sample)")) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_color_discrete(
+        labels = c("Equal-Weighted" = "Equal-Weighted (buy-and-hold)",
+                  "1" = "Long Q1 (lowest ASV)",
+                  "2" = "Long Q2",
+                  "3" = "Long Q3",
+                  "4" = "Long Q4",
+                  "5" = "Long Q5 (highest ASV)",
+                  "Long-Short" = "Long-Short (Q1-Q5)")
+    ) +
+    theme_minimal()
+```
+
+```{r}
+#full regression table
+# Extract coefficients 
+cn_coef_table <- cn_regression_results %>%
+  select(ASV_quantile, tidy_output) %>%
+  unnest(tidy_output)
+
+# Extract R-squared
+cn_rsq_table <- cn_regression_results %>%
+  select(ASV_quantile, glance_output) %>%
+  unnest(glance_output) %>%
+  select(ASV_quantile, r.squared, adj.r.squared)
+
+# Join and clean up
+cn_final_table <- cn_coef_table %>%
+  left_join(cn_rsq_table, by = "ASV_quantile") %>%
+  mutate(across(where(is.numeric), round, 4)) %>%
+  arrange(ASV_quantile, term)
+
+# Keep original p-values
+cn_final_table <- cn_coef_table %>%
+  left_join(cn_rsq_table, by = "ASV_quantile") %>%
+  arrange(ASV_quantile, term) %>%
+  rename(
+    Quantile = ASV_quantile,
+    Term = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    Statistic = statistic,
+    `P-Value` = p.value,
+    `R²` = r.squared,
+    `Adj. R²` = adj.r.squared
+  )
+
+cn_final_table %>%
+  mutate(
+    Estimate = round(Estimate, 4),
+    `Std. Error` = round(`Std. Error`, 4),
+    Statistic = round(Statistic, 3),
+    `R²` = round(`R²`, 2),
+    `Adj. R²` = round(`Adj. R²`, 2),
+    `P-Value` = ifelse(
+      `P-Value` < 0.05,
+      paste0("<strong>", formatC(`P-Value`, format = "f", digits = 4), "</strong>"),
+      formatC(`P-Value`, format = "f", digits = 4)
+    )
+  ) %>%
+  kable("html",
+        escape = FALSE,
+        caption = '<span style="color:black"><b>Table 5:</b> Fama-French Regression Results by ASV Quantile (Company Name Sample)</span>',
+        align = "c") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("condensed"))
+  
+```
+
+```{r}
+#only alpha coefficient regression table
+
+cn_coef_table <- cn_regression_results %>%
+    select(ASV_quantile, tidy_output) %>%
+    unnest(tidy_output)
+
+cn_intercepts <- cn_coef_table %>%
+    filter(term == "(Intercept)") %>%
+    select(ASV_quantile, estimate, std.error, statistic, p.value)
+
+cn_stats <- cn_regression_results %>%
+    select(ASV_quantile, glance_output) %>%
+    unnest(glance_output) %>%
+    select(ASV_quantile, r.squared, statistic, p.value) %>%
+    rename(F_statistic = statistic, p_value_F = p.value)
+
+# Join, format, and style
+cn_final_table <- cn_intercepts %>%
+    left_join(cn_stats, by = "ASV_quantile") %>%
+    # create label column for display + keep numeric for logic
+    mutate(
+        Quantile_num  = ASV_quantile,
+        Quantile = case_when(
+            ASV_quantile == 1 ~ "1 (Low ASV)",
+            ASV_quantile == 5 ~ "5 (High ASV)",
+            TRUE ~ as.character(ASV_quantile)
+        )
+    ) %>%
+    # fixed-point display strings
+    mutate(
+        Alpha_disp   = formatC(estimate,    format = "f", digits = 4),
+        SE_disp      = formatC(std.error,   format = "f", digits = 4),
+        t_disp       = formatC(statistic,   format = "f", digits = 3),
+        pA_disp      = formatC(p.value,     format = "f", digits = 4),
+        R2_disp      = formatC(r.squared,   format = "f", digits = 4),
+        F_disp       = formatC(F_statistic, format = "f", digits = 2),
+        pF_disp      = formatC(p_value_F,   format = "f", digits = 4)
+    ) %>%
+    # style p-values: Alpha grey+bold only for Quantile 5; otherwise bold if < .05
+    mutate(
+        `P-Value (Alpha)` = ifelse(
+            Quantile_num == 5,
+            paste0("<span style='color:grey; font-weight:bold;'>", pA_disp, "</span>"),
+            ifelse(p.value < 0.05, paste0("<strong>", pA_disp, "</strong>"), pA_disp)
+        ),
+        `P-Value (F)` = ifelse(p_value_F < 0.05, paste0("<strong>", pF_disp, "</strong>"), pF_disp)
+    ) %>%
+    # select only columns to show (this removes ASV_quantile)
+    select(
+        Quantile,
+        Alpha = Alpha_disp,
+        `Std. Error` = SE_disp,
+        `t-Statistic` = t_disp,
+        `P-Value (Alpha)`,
+        `R²` = R2_disp,
+        `F Statistic` = F_disp,
+        `P-Value (F)`
+    )
+
+# Render
+cn_final_table %>%
+    kable(
+        "html",
+        escape = FALSE,
+        caption = '<span style="color:black"><b>Table 5:</b> Fama–French Regression Results for Company Name Sample (Intercepts and Model Statistics)</span>',
+        align = "c"
+    ) %>%
+    kable_styling(full_width = FALSE, bootstrap_options = c("condensed"))
+
+```
