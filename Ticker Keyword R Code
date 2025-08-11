@@ -59,6 +59,7 @@ ticker_filtered <- tickers %>%
 n_distinct(ticker_filtered$ticker)
 
 #471 stocks left after accounting for those not listed on S&P500 for entire period and those with 0 search volume.
+#note that ticker_filtered dataset = ticker_data2 dataset. 
 ```
 
 ```{r}
