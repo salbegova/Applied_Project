@@ -1,6 +1,6 @@
 
 ```{r}
-
+#loading necessary packages
 library(tidyverse)
 library(gtrendsR)
 library(dplyr)
@@ -12,11 +12,10 @@ library(lubridate)
 library(yahoofinancer)
 library(data.table)
 library(kableExtra)
-
 ```
 
 ```{r}
-#removing noisy tickers
+#creating data set with noisy tickers for later robustness check 
 ambiguous_tickers <- c(
     "A", "ALL", "ARE", "BALL", "BEN", "BRO", "C", "CAT", "COST", "D", "DAY", "DECK", "DOC", "ED", "EW",
     "F", "FANG", "FAST", "FOX", "ICE", "IP", "IT", "J", "K", "KEY", "KEYS", "L", "MA", "MET", "MS", "NOW",
@@ -28,10 +27,10 @@ unambiguous_ticker <- ticker_data2 %>%
     filter(!ticker %in% ambiguous_tickers)
 ```
 
-TICKER
 ```{r}
-# Step 1: Identify consecutive zero GSV runs per ticker
-tickers <- ticker_data2 %>%
+#remove tickers where there are 8+ weeks of 0 GSV.
+
+#find consecutive zero GSV periods for stocks tickers <- ticker_data2 %>%
     arrange(ticker, date) %>%
     group_by(ticker) %>%
     mutate(
@@ -44,14 +43,14 @@ tickers <- ticker_data2 %>%
     ) %>%
     ungroup()
 
-# Step 2: Find tickers with 8+ consecutive zero GSVs
+#find tickers with 8+ consecutive zero GSVs and filter them
 tickers_to_remove2 <- tickers %>%
     group_by(ticker) %>%
     summarise(max_zero_run = max(zero_run_length, na.rm = TRUE)) %>%
     filter(max_zero_run >= 8) %>%
     pull(ticker)
 
-# Step 3: Filter them out
+#filter them
 ticker_filtered <- tickers %>%
     filter(!ticker %in% tickers_to_remove2) %>%
     select(-zero_gsv, -group_id, -zero_run_length)  # optional cleanup
@@ -60,10 +59,8 @@ ticker_filtered <- tickers %>%
 n_distinct(ticker_filtered$ticker)
 
 #471 stocks left after accounting for those not listed on S&P500 for entire period and those with 0 search volume.
-
 ```
 
-TICKER 
 ```{r}
 #calculating abnormal GSV.
 ticker_data <- ticker_data2 %>%
@@ -75,11 +72,11 @@ ticker_data <- ticker_data2 %>%
     ) %>%
     ungroup() %>%
   filter(!is.na(ASV)) #to remove NAs
-
 ```
 
 TICKER
 ```{r}
+
 #sort into weekly quantiles
 ticker_data <- ticker_data %>%
   group_by(date) %>%
@@ -87,7 +84,6 @@ ticker_data <- ticker_data %>%
   ungroup()
 
 #summary stats table
-
 summary_table_tic <- ticker_data %>%
   group_by(ASV_quantile) %>%
     summarise(
@@ -121,13 +117,12 @@ daily_sp500 <- sp500_returns %>%
     filter(!is.na(daily_return)) #to remove NAs
 ```
 
-TICKER
 ```{r}
-#actual data
+#calculating daily returns of portfolios held from Tuesday-Friday, based on last week's GSV. 
 ticker_data <- ticker_data %>%
     mutate(
-        portfolio_start = date + days(9),   # Next Tuesday because otherwise we have overlapping quartiles on Monday.
-        portfolio_end = date + days(12)      # Monday after that
+        portfolio_start = date + days(9), #the portfolio is held from Monday close to Friday close so returns are computed Tuesday-Friday. 
+        portfolio_end = date + days(12)     
     )
 
 tic_portfolio_daily <- ticker_data %>%
@@ -146,13 +141,11 @@ tic_quartile_daily_returns <- tic_portfolio_daily_returns %>%
         .groups = "drop"
     ) %>%
   filter(!is.na(avg_return))
-
 ```
 
 
-TICKER
 ```{r}
-#FF regressions
+#regressing daily excess returns of GSV-sorted portfolios on Fama-Carhart factors.
 
 #merge quartile return and FF datasets
 tic_data <- tic_quartile_daily_returns %>%
@@ -183,7 +176,7 @@ tic_regression_results %>%
 ```
 
 ```{r}
-#average returns 
+#generating table with average daily excess returns per quantile 
 tic_data %>%
   group_by(ASV_quantile) %>%
   summarise(
@@ -207,6 +200,10 @@ tic_data %>%
 ```
 
 ```{r}
+#calculating cumulative sp500 daily returns for the buy-and-hold strategy.
+
+#filtering s&p500 sample to only include stocks used in portfolio sorting. 
+
 target_stocks_tic <- c("A", "AAPL", "ABBV", "ABT", "ACN", "ADBE", "ADI", "ADM", "ADP", "ADSK", "AEE", "AEP", "AES", "AFL", "AIG", "AIZ", "AJG", "AKAM", "ALB", "ALGN", "ALL", "ALLE", "AMAT", "AMD", "AME", "AMGN", "AMP", "AMT", "AMZN", "ANET", "AON", "AOS", "APA", "APD", "APH", "APO", "ARE", "ATO", "AVB", "AVGO", "AVY", "AWK", "AXON", "AXP", "AZO", "BA", "BAC", "BALL", "BAX", "BBY", "BDX", "BEN", "BG", "BIIB", "BK", "BKNG", "BKR", "BLDR", "BLK", "BMY", "BR", "BRK.B", "BRO", "BSX", "BX", "BXP", "C", "CAG", "CAH", "CARR", "CAT", "CB", "CBOE", "CBRE", "CCI", "CCL", "CDNS", "CDW", "CF", "CFG", "CHD", "CHRW", "CHTR", "CI", "CINF", "CL", "CLX", "CMCSA", "CME", "CMG", "CMI", "CMS", "CNC", "CNP", "COF", "COO", "COP", "COR", "COST", "CPB", "CPRT", "CPT", "CRL", "CRM", "CRWD", "CSCO", "CSGP", "CSX", "CTAS", "CTRA", "CTSH", "CTVA", "CVS", "CVX", "CZR", "D", "DAL", "DAY", "DD", "DE", "DECK", "DELL", "DG", "DGX", "DHI", "DHR", "DIS", "DLR", "DLTR", "DOC", "DOV", "DOW", "DPZ", "DRI", "DTE", "DUK", "DVA", "DVN", "DXCM", "EA", "EBAY", "ECL", "ED", "EFX", "EG", "EIX", "EL", "ELV", "EMN", "EMR", "ENPH", "EOG", "EPAM", "EQIX", "EQR", "EQT", "ERIE", "ES", "ESS", "ETN", "ETR", "EW", "EXC", "EXPD", "EXPE", "EXR", "F", "FANG", "FAST", "FCX", "FDS", "FDX", "FE", "FFIV", "FI", "FICO", "FIS", "FITB", "FOX", "FRT", "FSLR", "FTNT", "FTV", "GD", "GDDY", "GE", "GEN", "GILD", "GIS", "GL", "GLW", "GM", "GNRC", "GOOG", "GOOGL", "GPC", "GPN", "GRMN", "GS", "GWW", "HAL", "HAS", "HBAN", "HCA", "HD", "HIG", "HII", "HLT", "HOLX", "HON", "HPE", "HPQ", "HRL", "HST", "HSY", "HUBB", "HUM", "HWM", "IBM", "ICE", "IDXX", "IEX", "IFF", "INCY", "INTC", "INTU", "INVH", "IP", "IPG", "IR", "IRM", "ISRG", "IT", "ITW", "IVZ", "J", "JBL", "JCI", "JNJ", "JPM", "K", "KDP", "KEY", "KEYS", "KHC", "KIM", "KKR", "KLAC", "KMB", "KMI", "KMX", "KO", "KR", "L", "LDOS", "LEN", "LH", "LHX", "LII", "LIN", "LKQ", "LLY", "LMT", "LNT", "LOW", "LRCX", "LULU", "LUV", "LVS", "LW", "LYB", "LYV", "MA", "MAA", "MAR", "MAS", "MCD", "MCHP", "MCK", "MCO", "MDLZ", "MDT", "MET", "META", "MGM", "MHK", "MKC", "MLM", "MMC", "MMM", "MNST", "MO", "MOH", "MOS", "MPC", "MPWR", "MRK", "MRNA", "MS", "MSCI", "MSFT", "MSI", "MTB", "MTCH", "MTD", "MU", "NCLH", "NDAQ", "NEE", "NEM", "NFLX", "NI", "NKE", "NOC", "NOW", "NRG", "NSC", "NTAP", "NTRS", "NUE", "NVDA", "NVR", "NWS", "NWSA", "NXPI", "O", "ODFL", "OKE", "OMC", "ON", "ORCL", "ORLY", "OTIS", "OXY", "PANW", "PARA", "PAYC", "PAYX", "PCAR", "PCG", "PEG", "PEP", "PFE", "PFG", "PG", "PGR", "PH", "PHM", "PKG", "PLD", "PM", "PNC", "PNR", "PNW", "PODD", "POOL", "PPG", "PPL", "PRU", "PSA", "PSX", "PTC", "PWR", "PYPL", "QCOM", "RCL", "REG", "REGN", "RF", "RJF", "RL", "RMD", "ROK", "ROL", "ROP", "ROST", "RSG", "RTX", "SBAC", "SBUX", "SCHW", "SHW", "SJM", "SLB", "SNA", "SNPS", "SO", "SPG", "SPGI", "SRE", "STE", "STLD", "STT", "STX", "STZ", "SWK", "SWKS", "SYF", "SYK", "SYY", "T", "TAP", "TDG", "TDY", "TECH", "TEL", "TER", "TFC", "TGT", "TJX", "TKO", "TMO", "TMUS", "TPL", "TPR", "TRGP", "TRMB", "TROW", "TRV", "TSCO", "TSLA", "TSN", "TT", "TTWO", "TXN", "TXT", "TYL", "UAL", "UBER", "UDR", "UHS", "ULTA", "UNH", "UNP", "UPS", "URI", "USB", "V", "VICI", "VLO", "VMC", "VRSK", "VRTX", "VST", "VTR", "VZ", "WAB", "WAT", "WBA", "WBD", "WDAY", "WDC", "WEC", "WELL", "WFC", "WM", "WMB", "WMT", "WRB", "WSM", "WST", "WTW", "WY", "WYNN", "XEL", "XOM", "XYL", "YUM", "ZBH", "ZBRA", "ZTS")
 
 daily_sp500_subset_tic <- daily_sp500 %>%
@@ -220,6 +217,7 @@ buy_hold_daily_returns_tic <- daily_sp500_subset_tic %>%
   mutate(excess_return = avg_return - rf) %>%        # Subtract the correct RF
   arrange(date)
 
+#calculating cumulative returns of buy-and-hold strategy. 
 buy_hold_cumulative_tic <- buy_hold_daily_returns_tic %>%
   mutate(
     cum_excess_return = cumprod(1 + excess_return) - 1,
@@ -276,46 +274,25 @@ ggplot(combined_cumulative_tic, aes(x = date, y = cum_excess_return, color = ASV
 ```
 
 ```{r}
-#plotting cumulative returns
+#generating regression table 
 
-tic_cumulative_returns <- tic_quartile_daily_returns %>%
-    arrange(ASV_quantile, date) %>%
-    group_by(ASV_quantile) %>%
-    mutate(cum_return = cumprod(1 + avg_return) - 1)
-
-# Plot cumulative returns
-ggplot(tic_cumulative_returns, aes(x = date, y = cum_return, color = as.factor(ASV_quantile))) +
-    geom_line(size = 1) +
-    labs(
-        title = "Cumulative Return per ASV Quartile",
-        x = "Date",
-        y = "Cumulative Return",
-        color = "ASV Quantile"
-    ) +
-    theme_minimal()
-
-#1 means 100%, 1.5 means 150%
-```
-
-```{r}
-# Extract coefficients 
+#extract coefficients 
 tic_coef_table <- tic_regression_results %>%
   select(ASV_quantile, tidy_output) %>%
   unnest(tidy_output)
 
-# Extract R-squared
+#extract R-squared
 tic_rsq_table <- tic_regression_results %>%
   select(ASV_quantile, glance_output) %>%
   unnest(glance_output) %>%
   select(ASV_quantile, r.squared, adj.r.squared)
 
-# Join and clean up
+#join 
 tic_final_table <- tic_coef_table %>%
   left_join(cn_rsq_table, by = "ASV_quantile") %>%
   mutate(across(where(is.numeric), round, 4)) %>%
   arrange(ASV_quantile, term)
 
-# Keep original p-values
 tic_final_table <- tic_coef_table %>%
   left_join(cn_rsq_table, by = "ASV_quantile") %>%
   arrange(ASV_quantile, term) %>%
@@ -352,12 +329,7 @@ tic_final_table %>%
 
 ```{r}
 #only alpha coefficient regression table
-library(dplyr)
-library(tidyr)
-library(knitr)
-library(kableExtra)
 
-# --- Coefficient and stats tables ---
 tic_coef_table <- tic_regression_results %>%
   select(ASV_quantile, tidy_output) %>%
   unnest(tidy_output)
@@ -372,7 +344,6 @@ tic_stats <- tic_regression_results %>%
   select(ASV_quantile, r.squared, statistic, p.value) %>%
   rename(F_statistic = statistic, p_value_F = p.value)
 
-# --- Join, format, and style ---
 tic_final_table <- tic_intercepts %>%
   left_join(tic_stats, by = "ASV_quantile") %>%
   mutate(
@@ -388,11 +359,11 @@ tic_final_table <- tic_intercepts %>%
     R2_disp      = formatC(r.squared,   format = "f", digits = 4),
     F_disp       = formatC(F_statistic, format = "f", digits = 2),
     pF_disp      = formatC(p_value_F,   format = "f", digits = 4),
-    # Style Alpha p-values: bold if significant
+    #style Alpha p-values: bold if significant
     `P-Value (Alpha)` = ifelse(p.value < 0.05,
                                paste0("<strong>", pA_disp, "</strong>"),
                                pA_disp),
-    # Style F-test p-values: bold if significant
+    #style F-test p-values: bold if significant
     `P-Value (F)` = ifelse(p_value_F < 0.05,
                            paste0("<strong>", pF_disp, "</strong>"),
                            pF_disp)
@@ -408,7 +379,7 @@ tic_final_table <- tic_intercepts %>%
     `P-Value (F)`
   )
 
-# --- Render table ---
+#display table
 tic_final_table %>%
   kable(
     "html",
@@ -421,7 +392,7 @@ tic_final_table %>%
 ```
 
 ```{r}
-#long-short returns
+#calculating long-short strategy (long on Q1, least searched and short on Q5, most searched) 
 tic_long_short_returns <- tic_quartile_daily_returns %>%
     filter(ASV_quantile %in% c(5, 1)) %>%
     select(date, ASV_quantile, avg_return) %>%
@@ -438,14 +409,14 @@ tic_regression_data <- tic_long_short_returns %>%
 tic_model <- lm(long_short_excess ~ mktrf + smb + hml + umd, data = tic_regression_data)
 summary(tic_model)
 
-# Extract coefficient details
+#extract coefficient details
 tic_long_short_coef <- tidy(tic_model)
 
-# Extract model summary statistics
+#extract model summary statistics
 tic_long_short_rsq <- glance(tic_model)
 
 tic_long_short_table <- tic_long_short_coef %>%
-  mutate(Quantile = "Q1 - Q5") %>%  # Label for display
+  mutate(Quantile = "Q1 - Q5") %>%  
   select(Quantile, term, estimate, std.error, statistic, p.value) %>%
   rename(
     Term = term,
@@ -468,7 +439,7 @@ tic_long_short_table <- tic_long_short_coef %>%
     `F P-Value` = ifelse(row_number() == 1, `F P-Value`, "")
   )
 
-# Step 7: Display nicely with kable
+#display in table
 tic_long_short_table %>%
   mutate(
     Estimate = round(Estimate, 4),
@@ -486,48 +457,3 @@ tic_long_short_table %>%
         align = "c") %>%
   kable_styling(full_width = FALSE, bootstrap_options = c("condensed"))
 ```
-
-RECYCLING
-```{r}  
-company_lookup <- data.frame(
-  ticker = tickers <- c("ADM", "AEP", "ANET", "ATO", "BDX", "CAG", "CEG", "CL", "CPT", "CSCO", "DD", "DPZ", "DRI", "DTE", "EA", "ED", "EMN", "ENPH", "EOG", "EPAM", "ES", "FE", "FICO", "FITB", "GPC", "GWW", "HCA", "HII", "HPE", "HRL", "ICE", "IPG", "J", "K", "LVS", "LYB", "MCO", "MGM", "NRG", "NXPI", "ODFL", "PKG", "SNA", "SWKS", "TAP", "TMO", "TT", "TTWO", "VMC", "WYNN"),
-
-  company_name = ctickers <- c("ADM stock", "AEP stock", "arista stock", "atmos stock", "BD stock", "conagra stock", "constellation stock", "colgate stock", "camden stock", "cisco stock", "dupont stock,", "dominos stock", "darden stock", "DTE stock", "EA stock", "conEd stock", "eastman stock", "enphase stock", "eog stock", "EPAM stock", "eversource stock", "first energy stock", "fico stock", "Fifth Third Bank stock", "GPC stock", "grainger stock", "HCA stock", "HII stock", "HPE stock", "hormel stock", "ICE stock", "IPG stock", "jacobs stock", "kellogg stock", "sands stock", "LYB stock", "moodys stock", "mgm stock", "nrg stock", "NXP stock", "ODFL stock", "PCA stock", "snap on stock", "skyworks stock", "coors stock", "thermo fisher stock", "trane stock", "take two stock", "vulcan stock", "wynn stock"))
-
-# Empty dataframe
-gsv_cn <- data.frame()
-
-# Loop with lookup for company name
-for (ticker in tickers) {
-  # Lookup company name for search
-  company_name <- company_lookup$company_name[company_lookup$ticker == ticker]
-  keyword <- company_name  # ✅ Use company name as the search term
-
-  message("Fetching: ", keyword)
-
-  tryCatch({
-    res <- gtrends(
-      keyword = keyword,
-      geo = "US",
-      time = "2020-05-01 2025-07-01",
-      gprop = "web",
-      onlyInterest = TRUE
-    )
-
-    df <- res$interest_over_time
-    df$date <- as.Date(df$date)
-    df$ticker <- ticker
-    df$company_name <- company_name  # ✅ Keep company name in results
-    gsv_cn <- bind_rows(gsv_cn, df)
-
-    Sys.sleep(2)  # Avoid Google API blocking
-  }, error = function(e) {
-    message("Error with ", ticker, ": ", e$message)
-  })
-}
-
-# Rename 'hits' to 'GSV' and drop unused columns
-names(gsv_cn)[names(gsv_cn) == "hits"] <- "GSV"
-gsv_cn <- gsv_cn[, !(names(gsv_cn) %in% c("gprop", "category"))]
-```
-
