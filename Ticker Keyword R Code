@@ -30,7 +30,8 @@ unambiguous_ticker <- ticker_data2 %>%
 ```{r}
 #remove tickers where there are 8+ weeks of 0 GSV.
 
-#find consecutive zero GSV periods for stocks tickers <- ticker_data2 %>%
+#find consecutive zero GSV periods for stocks 
+tickers <- ticker_data2 %>%
     arrange(ticker, date) %>%
     group_by(ticker) %>%
     mutate(
